@@ -1,17 +1,17 @@
-# Virtual Environment
+# Virtual environments
 venv/
 env/
+.venv/
 
-# Python Cache
+# Python cache
 __pycache__/
 *.pyc
 
-# OS Specific
+# Notebooks / editors / OS
+.ipynb_checkpoints/
+.vscode/
 .DS_Store
 Thumbs.db
 
-# VS Code Settings
-.vscode/
-
-# Simulation logs & outputs
-outputs/dana
+# Large or disposable training artefacts (the 5 final dqn_best_*.pt checkpoints are kept)
+results/sweep_*.pt

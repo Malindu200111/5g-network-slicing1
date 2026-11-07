@@ -1,4 +1,7 @@
-matplotlib==3.11.2
-numpy==2.5.4
-pandas==3.1.1
-simpy==4.1.2
+# Runtime dependencies (Python 3.10+).
+# After `pip install` on a working machine, run `pip freeze` to record the exact versions you used.
+numpy
+pandas
+matplotlib
+simpy
+torch
