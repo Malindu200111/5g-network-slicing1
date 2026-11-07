@@ -19,7 +19,7 @@ ASSUMED = {
     "w_pb": 10.0,               # reward weight on blocking probability
     "w_wq": 1.0,                # reward weight on normalised waiting time
     "wq_cap": 5.0,              # seconds; Wq clipped here before normalising
-    "move_cost": 0.05,          # penalty for reconfiguring
+    "move_cost": 0.3,          # penalty for reconfiguring
     "train_days": (1, 120),
     "val_days": (121, 150),
     "test_days": (151, 180),
