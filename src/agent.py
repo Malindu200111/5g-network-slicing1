@@ -45,7 +45,7 @@ class ReplayBuffer:
 class DQNAgent:
     def __init__(self, obs_dim, n_actions, hp, device="cpu", seed=0):
         self.hp, self.device, self.n_actions = hp, device, n_actions
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng([seed, 1])     # separate stream from the environment's default_rng(seed)
         self.q = QNetwork(obs_dim, n_actions, hp["hidden"]).to(device)
         self.q_target = copy.deepcopy(self.q)
         self.opt = torch.optim.Adam(self.q.parameters(), lr=hp["lr"])
@@ -105,7 +105,7 @@ class DQNAgent:
             torch.save(self.q.state_dict(), path)
             return True
         except Exception as e:                       # disk full, OneDrive/antivirus lock, ...
-            print(f"WARNING: could not save checkpoint to {path}: {e}")
+            print(f"WARNING: could not save checkpoint to {path}: {e} (any file already there is NOT this model)")
             return False
 
     def load(self, path):

@@ -2,7 +2,7 @@
 Train a DQN on the slicing environment and compare with the baselines.
 Run from the project root:
     python train_dqn.py                    # default: 2000 episodes, interval from config.py
-    python train_dqn.py --episodes 300     # quick test
+    python train_dqn.py --episodes 300     # quick test (written to results/quick_ep300/)
     python train_dqn.py --minutes 5        # decision interval override (5, 15, 60 ...)
 """
 import argparse
@@ -14,29 +14,13 @@ import pandas as pd
 import torch
 
 from src.agent import DQNAgent
-from src.config import ASSUMED, DATA_PATH, RESULTS_DIR, SLICES
+from src.config import ASSUMED, DATA_PATH, SLICES
 from src.environment import (SlicingEnv, evaluate, load_data, policy_proportional,
                              policy_static, print_table, proportional_alloc)
-
-# ---- DQN hyperparameters (ASSUMED / tuned on validation days: list them in the thesis) ----
-HP = {
-    "hidden": 128,
-    "lr": 1e-3,
-    "gamma": 0.95,
-    "batch_size": 128,
-    "buffer_size": 100_000,
-    "learn_start": 1_000,       # steps of experience before learning starts
-    "learn_every": 4,           # one gradient step per 4 env steps
-    "tau": 0.01,                # soft target update rate
-    "double_dqn": False,        # True = Double-DQN target
-    "eps_start": 1.0,
-    "eps_end": 0.05,
-    "eps_decay_frac": 0.6,      # epsilon reaches eps_end after 60% of the episodes
-    "eval_every": 50,           # validation every N episodes
-}
+from train_hparams import FULL_EPISODES, HP, output_dir
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--episodes", type=int, default=2000)
+parser.add_argument("--episodes", type=int, default=FULL_EPISODES)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--minutes", type=int, default=ASSUMED["decision_minutes"])
 args = parser.parse_args()
@@ -45,7 +29,8 @@ cfg = dict(ASSUMED)
 cfg["decision_minutes"] = args.minutes
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
-RESULTS_DIR.mkdir(exist_ok=True)
+OUT_DIR = output_dir(args.episodes)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 tag = f"{args.minutes}min_seed{args.seed}"
 
 # ---------------- data and baselines ----------------
@@ -68,9 +53,9 @@ val_static = evaluate(env_eval, policy_static, val, static_mean)["return_per_day
 print(f"validation return/day  Static(mean) {val_static:.1f} | Proportional {val_prop:.1f}")
 
 # ---------------- training ----------------
-best_val, best_ep, step = -np.inf, 0, 0
+best_val, best_ep, step, best_state = -np.inf, 0, 0, None
 ep_returns, val_points = [], []
-best_path = RESULTS_DIR / f"dqn_best_{tag}.pt"
+best_path = OUT_DIR / f"dqn_best_{tag}.pt"
 t0 = time.time()
 for ep in range(1, args.episodes + 1):
     eps = max(HP["eps_end"], HP["eps_start"] - (HP["eps_start"] - HP["eps_end"]) * ep / (args.episodes * HP["eps_decay_frac"]))
@@ -91,14 +76,15 @@ for ep in range(1, args.episodes + 1):
         val_points.append((ep, v))
         if v > best_val:
             best_val, best_ep = v, ep
-            agent.save(best_path)
+            best_state = agent.get_state()          # in memory, so a failed disk write cannot change results
         el = time.time() - t0
         print(f"ep {ep:5d} | eps {eps:.2f} | train return/day {np.mean(ep_returns[-HP['eval_every']:]):8.1f} | "
               f"val {v:8.1f} (best {best_val:8.1f} @ {best_ep}) | {el/60:.1f} min")
 print(f"training time: {(time.time() - t0)/60:.1f} min")
 
 # ---------------- final test with the BEST validation model ----------------
-agent.load(best_path)
+agent.set_state(best_state)
+agent.save(best_path)
 results = {
     "Static (mean)": evaluate(env_eval, policy_static, test, static_mean),
     "Static (peak)": evaluate(env_eval, policy_static, test, static_peak),
@@ -112,8 +98,9 @@ rows = []
 for name, r in results.items():
     rows.append({"policy": name, **{f"PB_{s}": r["PB"][i] for i, s in enumerate(SLICES)},
                  **{f"Wq_{s}": r["Wq"][i] for i, s in enumerate(SLICES)},
+                 "throughput": r["util"] * cfg["total_prbs"] * cfg["mu"],
                  "util": r["util"], "moves_per_day": r["moves_per_day"], "return_per_day": r["return_per_day"]})
-pd.DataFrame(rows).to_csv(RESULTS_DIR / f"test_results_{tag}.csv", index=False)
+pd.DataFrame(rows).to_csv(OUT_DIR / f"test_results_{tag}.csv", index=False)
 
 # ---------------- plots ----------------
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -125,7 +112,7 @@ ax.axhline(val_prop, color="green", linestyle="--", label="Proportional (validat
 ax.axhline(val_static, color="red", linestyle="--", label="Static mean (validation)")
 ax.set_xlabel("Episode (1 episode = 1 day)"); ax.set_ylabel("Return per day (higher is better)")
 ax.set_title("DQN training convergence"); ax.grid(True, linestyle="--", alpha=0.6); ax.legend()
-plt.tight_layout(); plt.savefig(RESULTS_DIR / f"training_curve_{tag}.png", dpi=200)
+plt.tight_layout(); plt.savefig(OUT_DIR / f"training_curve_{tag}.png", dpi=200)
 
 def run_day(policy, d):
     obs, _ = env_eval.reset(day=d, init_alloc=static_mean)
@@ -148,5 +135,5 @@ for k, (name, pol) in enumerate([("Proportional", policy_proportional), (f"DQN",
 ax[0].set_ylabel("lambda"); ax[0].set_title(f"Day {d0+1}: traffic from CSV"); ax[2].set_xlabel("Hour of day")
 for a in ax:
     a.grid(True, linestyle="--", alpha=0.6); a.legend(loc="upper right")
-plt.tight_layout(); plt.savefig(RESULTS_DIR / f"allocation_dqn_vs_prop_{tag}.png", dpi=200)
+plt.tight_layout(); plt.savefig(OUT_DIR / f"allocation_dqn_vs_prop_{tag}.png", dpi=200)
 plt.show()

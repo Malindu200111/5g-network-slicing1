@@ -12,7 +12,7 @@ ASSUMED = {
     "total_prbs": 60,           # capacity-constrained scenario (100 PRBs left the network ~50% idle)
     "mu": 1.0,                  # pkts/s per PRB
     "buffer_per_slice": 20,     # K_s = c_s + buffer
-    "decision_minutes": 15,    # 5 = finer (final results), 15 = faster (development)
+    "decision_minutes": 15,     # interval used for the reported results (5 = finer but slower)
     "move_size": 5,             # PRBs moved by one action
     "min_alloc": 5,             # minimum PRBs per slice (starvation protection)
     "slice_weights": {"URLLC": 3.0, "eMBB": 1.0, "mMTC": 0.5},

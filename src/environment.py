@@ -1,6 +1,6 @@
 """
 Slicing environment: CSV lambda(t) -> M/M/c/K queues -> state / reward (for the DQN agent).
-1 episode = 1 day = 288 decisions (every 5 minutes).
+1 episode = 1 day = 1440 / decision_minutes decisions (96 at the default 15 minutes).
 Actions: 0 = keep, 1..6 = move `move_size` PRBs from slice i to slice j.
 """
 import numpy as np

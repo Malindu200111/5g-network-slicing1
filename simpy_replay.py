@@ -11,9 +11,10 @@ Run from the project root (after main.py has produced results/dqn_best_15min_see
     python simpy_replay.py --stage export                  # only write the allocation CSV (fast)
 
 Rate scaling: lambda and mu are both multiplied by --scale (default 1.0 = real rates, used for the
-reported results). Blocking probability of an M/M/c/K queue depends only on lambda/mu, so drop
-PROBABILITIES are unchanged by scaling, while the number of simulated packets (run time) shrinks;
-use e.g. --scale 0.1 for a fast test run (it slightly under-estimates blocking). Simulated waiting times are converted back (x scale).
+reported results). Scaling keeps lambda/mu, so STEADY-STATE blocking is unchanged and fewer packets
+are simulated. But service times grow by 1/scale while lambda still changes every minute, so the
+queue cannot follow short spikes and blocking is under-estimated, more so at small scales. Use
+e.g. --scale 0.1 only for a fast test run. Simulated waiting times are converted back (x scale).
 Estimated real packet counts = simulated count / scale.
 """
 import argparse
@@ -29,9 +30,7 @@ import pandas as pd
 from src.config import ASSUMED, DATA_PATH, RESULTS_DIR, SLICES
 from src.environment import (SlicingEnv, load_data, policy_proportional, policy_static,
                              proportional_alloc)
-
-HP = {"hidden": 128, "lr": 1e-3, "gamma": 0.95, "batch_size": 128, "buffer_size": 100_000,
-      "learn_start": 1_000, "learn_every": 4, "tau": 0.01, "double_dqn": False}
+from train_hparams import HP
 
 
 def parse_days(txt, n_days):
@@ -211,7 +210,7 @@ def main():
 
     # ---------------- stage 2
     days = parse_days(args.days, lam.shape[0])[:: args.every]
-    pols = [p for p in args.policies.split(",") if p in set(adf.policy)]
+    pols = [p.strip() for p in args.policies.split(",") if p.strip() in set(adf.policy)]
     steps, step_sec = lam.shape[1], cfg["decision_minutes"] * 60.0
     jobs = []
     for pidx, p in enumerate(pols):

@@ -53,7 +53,7 @@ All assumed parameters are listed in `src/config.py`.
 │   └── trainer.py         # reusable DQN training loop (used by the sweep)
 ├── main.py                # full pipeline for one seed: baselines, DQN training, evaluation, plots
 ├── train_dqn.py           # standalone DQN training and comparison script
-├── train_hparams.py       # DQN hyperparameters shared by train_dqn.py and sweep_move_cost.py
+├── train_hparams.py       # DQN hyperparameters and output folder shared by the training, sweep and replay scripts
 ├── sweep_move_cost.py     # reconfiguration-penalty sweep
 ├── aggregate_seeds.py     # mean/std over seeds from results/test_results_*.csv
 ├── verify_priority.py     # priority formula vs SimPy (results/priority_wq_validation.csv)
@@ -79,7 +79,7 @@ pip install -r requirements.txt
 ```
 
 ```powershell
-python main.py --episodes 300 --no-sensitivity   # quick test (a few minutes)
+python main.py --episodes 300 --no-sensitivity   # quick test (a few minutes), written to results/quick_ep300/
 python main.py --seed 0                          # full run, 2000 episodes (repeat with --seed 1..4)
 python aggregate_seeds.py                        # mean/std over seeds -> results/summary_mean_std_15min.csv
 python verify_simpy.py --quick                   # SimPy validation of the analytical model (drop --quick for the final run)
@@ -114,9 +114,9 @@ Baselines are deterministic, so they have no seed variance.
 
 The ranking Static > Proportional > DQN is the same in the analytical model and in the SimPy replay, and the two agree closely (all-slice P_B difference below 0.002). SimPy uses the same Poisson/exponential assumptions as the analytical model, so this confirms the calculations and the replay, not the assumptions themselves. A run with `--scale 0.1` is faster but under-estimates blocking slightly. The earlier scale-0.1 outputs are kept in `results/scale0.1_backup/`.
 
-### Analytical model vs SimPy (`verify_simpy.py --quick`)
+### Analytical model vs SimPy (`results/simpy_validation.csv`)
 
-Over 21 operating points (3 slice sizes x offered load 0.4-1.3): maximum |P_B error| 0.013, mean error of W and L about 1.4%. `verify_priority.py` compares the non-preemptive priority waiting-time formula with SimPy (c = 10, 12 points): mean relative error 2.1%, maximum 4.6% (full run; `--quick` is noisier). In the 3-slice non-preemptive priority simulation, the aggregate blocking probability and mean number in system match the analytical M/M/c/K values, and URLLC waits much less than eMBB and mMTC.
+Over 21 operating points (3 slice sizes x offered load 0.4-1.3): maximum |P_B error| 0.0045, mean error of W and L about 0.4%. `verify_priority.py` compares the non-preemptive priority waiting-time formula with SimPy (c = 10, 12 points): mean relative error 2.1%, maximum 4.6% (full run; `--quick` is noisier). In the 3-slice non-preemptive priority simulation, the aggregate blocking probability and mean number in system match the analytical M/M/c/K values, and URLLC waits much less than eMBB and mMTC.
 
 ---
 

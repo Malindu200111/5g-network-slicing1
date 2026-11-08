@@ -22,6 +22,8 @@ def erlang_c(c, a):
     """Probability of waiting in M/M/c (a = lambda/mu, requires a < c)."""
     if a >= c:
         raise ValueError("Erlang-C needs a < c (rho < 1)")
+    if a <= 0:
+        return 0.0
     rho = a / c
     log_term = c * math.log(a) - math.lgamma(c + 1) - math.log(1.0 - rho)
     s = sum(math.exp(n * math.log(a) - math.lgamma(n + 1)) for n in range(c))

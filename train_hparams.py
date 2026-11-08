@@ -1,4 +1,8 @@
-"""DQN hyperparameters shared by train_dqn.py and sweep_move_cost.py."""
+"""DQN hyperparameters and output location shared by the training, sweep and replay scripts."""
+from src.config import RESULTS_DIR
+
+FULL_EPISODES = 2000            # length of a full run; only these write to results/ directly
+
 HP = {
     "hidden": 128,
     "lr": 1e-3,
@@ -14,3 +18,8 @@ HP = {
     "eps_decay_frac": 0.6,      # epsilon reaches eps_end after 60% of the episodes
     "eval_every": 50,           # validation every N episodes
 }
+
+
+def output_dir(episodes):
+    """Full runs write to results/; shorter runs get their own folder so they cannot replace them."""
+    return RESULTS_DIR if episodes == FULL_EPISODES else RESULTS_DIR / f"quick_ep{episodes}"

@@ -15,3 +15,4 @@ Thumbs.db
 
 # Large or disposable training artefacts (the 5 final dqn_best_*.pt checkpoints are kept)
 results/sweep_*.pt
+results/quick_ep*/
