@@ -10,9 +10,10 @@ Run from the project root (after main.py has produced results/dqn_best_15min_see
     python simpy_replay.py --days all --workers 6          # all 180 days (long!)
     python simpy_replay.py --stage export                  # only write the allocation CSV (fast)
 
-Rate scaling: lambda and mu are both multiplied by --scale (default 0.1). Blocking probability of an
-M/M/c/K queue depends only on lambda/mu, so drop PROBABILITIES are unchanged, while the number of
-simulated packets (run time) is 10x smaller. Simulated waiting times are converted back (x scale).
+Rate scaling: lambda and mu are both multiplied by --scale (default 1.0 = real rates, used for the
+reported results). Blocking probability of an M/M/c/K queue depends only on lambda/mu, so drop
+PROBABILITIES are unchanged by scaling, while the number of simulated packets (run time) shrinks;
+use e.g. --scale 0.1 for a fast test run (it slightly under-estimates blocking). Simulated waiting times are converted back (x scale).
 Estimated real packet counts = simulated count / scale.
 """
 import argparse
@@ -185,7 +186,7 @@ def main():
     ap.add_argument("--model", default=None, help="path of the DQN .pt (default results/dqn_best_<tag>.pt)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--minutes", type=int, default=ASSUMED["decision_minutes"])
-    ap.add_argument("--scale", type=float, default=0.1)
+    ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 2) - 1))
     args = ap.parse_args()
 

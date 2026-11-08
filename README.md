@@ -15,10 +15,11 @@ A simulation framework in which a **Deep Q-Network (DQN)** agent dynamically re-
 |---|---|
 | Multi-slice environment driven by a 180-day traffic CSV | Done |
 | Analytical M/M/c/K model (P_B, Wq, W, L, utilisation; Little's law) | Done |
-| SimPy validation of the analytical model (load sweep, 3-slice priority queue) | Done (final full run pending) |
+| SimPy validation of the analytical model (load sweep, 3-slice priority queue) | Done (quick run and full run) |
 | SimPy packet-level replay of Static / Proportional / DQN allocations | Done (seed 0; other seeds pending) |
 | DQN agent (5 seeds, best-validation checkpoint, reconfiguration-cost sweep) | Done |
 | PPO agent and DQN-vs-PPO comparison | **Not implemented yet** (planned) |
+| Non-preemptive priority formula (Cobham) validated against SimPy | Done (`src/priority_model.py`, `verify_priority.py`) |
 | Priority-based queueing inside the RL environment | Not included (priority queue is validated in SimPy only) |
 | Hardware-in-the-loop (ESP32) | Not included (optional in the proposal) |
 
@@ -47,6 +48,7 @@ All assumed parameters are listed in `src/config.py`.
 │   ├── config.py          # paths and all assumed parameters
 │   ├── environment.py     # slicing environment, baselines, evaluation
 │   ├── queuing_model.py   # analytical M/M/c/K + SimPy simulators (single slice, 3-slice priority)
+│   ├── priority_model.py  # Erlang-C and non-preemptive priority (Cobham) waiting times
 │   ├── agent.py           # DQN (replay buffer, target network, optional Double-DQN)
 │   └── trainer.py         # reusable DQN training loop (used by the sweep)
 ├── main.py                # full pipeline for one seed: baselines, DQN training, evaluation, plots
@@ -54,6 +56,7 @@ All assumed parameters are listed in `src/config.py`.
 ├── train_hparams.py       # DQN hyperparameters shared by train_dqn.py and sweep_move_cost.py
 ├── sweep_move_cost.py     # reconfiguration-penalty sweep
 ├── aggregate_seeds.py     # mean/std over seeds from results/test_results_*.csv
+├── verify_priority.py     # priority formula vs SimPy (results/priority_wq_validation.csv)
 ├── verify_simpy.py        # analytical M/M/c/K vs SimPy, priority-queue check
 ├── simpy_replay.py        # export allocations and replay them packet by packet in SimPy
 ├── requirements.txt
@@ -80,6 +83,7 @@ python main.py --episodes 300 --no-sensitivity   # quick test (a few minutes)
 python main.py --seed 0                          # full run, 2000 episodes (repeat with --seed 1..4)
 python aggregate_seeds.py                        # mean/std over seeds -> results/summary_mean_std_15min.csv
 python verify_simpy.py --quick                   # SimPy validation of the analytical model (drop --quick for the final run)
+python verify_priority.py --quick                # priority-queue formula vs SimPy
 python simpy_replay.py                           # SimPy replay of Static/Proportional/DQN on test days 151-180
 ```
 
@@ -100,19 +104,19 @@ python simpy_replay.py                           # SimPy replay of Static/Propor
 
 Baselines are deterministic, so they have no seed variance.
 
-### Packet-level SimPy replay (DQN seed 0, rates scaled by 0.1, estimated real packets per day)
+### Packet-level SimPy replay (DQN seed 0, real rates, scale 1.0, estimated packets per day)
 
-| Policy | Dropped packets/day | URLLC drops/day | P_B (all slices), SimPy | P_B (all slices), analytical |
-|---|---|---|---|---|
-| Static (mean) | 783,285 | 108,319 | 0.164 | 0.166 |
-| Proportional | 578,111 | 27,608 | 0.121 | 0.125 |
-| **DQN** | **484,859** | **6,225** | **0.102** | **0.106** |
+| Policy | Dropped packets/day | URLLC P_B, SimPy | URLLC P_B, analytical | P_B (all slices), SimPy | P_B (all slices), analytical |
+|---|---|---|---|---|---|
+| Static (mean) | 791,636 | 0.1434 | 0.1435 | 0.166 | 0.166 |
+| Proportional | 593,415 | 0.0410 | 0.0415 | 0.124 | 0.125 |
+| **DQN** | **503,557** | **0.0138** | **0.0145** | **0.106** | **0.106** |
 
-The ranking Static > Proportional > DQN is the same in the analytical model and in the SimPy replay. SimPy gives slightly lower blocking than the analytical model in every case (difference at most about 0.02, largest for mMTC); likely causes are the rate scaling, empty queues at the start of each day, and the minute-wise steady-state assumption of the analytical model.
+The ranking Static > Proportional > DQN is the same in the analytical model and in the SimPy replay, and the two agree closely (all-slice P_B difference below 0.002). SimPy uses the same Poisson/exponential assumptions as the analytical model, so this confirms the calculations and the replay, not the assumptions themselves. A run with `--scale 0.1` is faster but under-estimates blocking slightly. The earlier scale-0.1 outputs are kept in `results/scale0.1_backup/`.
 
 ### Analytical model vs SimPy (`verify_simpy.py --quick`)
 
-Over 21 operating points (3 slice sizes x offered load 0.4-1.3): maximum |P_B error| 0.013, mean error of W and L about 1.4%. In the 3-slice non-preemptive priority simulation, the aggregate blocking probability and mean number in system match the analytical M/M/c/K values, and URLLC waits much less than eMBB and mMTC.
+Over 21 operating points (3 slice sizes x offered load 0.4-1.3): maximum |P_B error| 0.013, mean error of W and L about 1.4%. `verify_priority.py` compares the non-preemptive priority waiting-time formula with SimPy (c = 10, 12 points): mean relative error 2.1%, maximum 4.6% (full run; `--quick` is noisier). In the 3-slice non-preemptive priority simulation, the aggregate blocking probability and mean number in system match the analytical M/M/c/K values, and URLLC waits much less than eMBB and mMTC.
 
 ---
 
