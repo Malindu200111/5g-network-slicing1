@@ -1,8 +1,12 @@
 """
 Sweep the reconfiguration penalty (move_cost) and compare on COMMON metrics.
 Rewards from different move_cost values are NOT comparable, so every trained agent is
-re-evaluated on the TEST days with move_cost = 0 (pure QoS reward) and we also report
-loss (PB) per slice and reconfigurations per day.
+re-evaluated on the VALIDATION days with move_cost = 0 (pure QoS reward) and we also report
+loss (PB) per slice and reconfigurations per day. Test days are never used here, because
+move_cost is a hyperparameter chosen from this sweep.
+
+Selection rule: the largest move_cost whose mean QoS return is within 1% of the best one
+(fewer reconfigurations, for almost no loss of QoS).
 
     python sweep_move_cost.py                      # default sweep
     python sweep_move_cost.py --episodes 300 --seeds 0   # quick test
@@ -30,7 +34,7 @@ args = parser.parse_args()
 RESULTS_DIR.mkdir(exist_ok=True)
 cfg0 = dict(ASSUMED); cfg0["decision_minutes"] = args.minutes
 days = lambda r: list(range(r[0] - 1, r[1]))
-train, val, test = days(cfg0["train_days"]), days(cfg0["val_days"]), days(cfg0["test_days"])
+train, val = days(cfg0["train_days"]), days(cfg0["val_days"])
 data = load_data(DATA_PATH, args.minutes)
 static_mean = proportional_alloc(data["mean"][train].mean(axis=(0, 1)), cfg0["total_prbs"], cfg0["min_alloc"])
 
@@ -49,7 +53,7 @@ if RAW.exists() and not args.fresh:                  # resume after a crash
     print(f"Resuming: {len(done)} finished DQN runs found in {RAW.name}: {sorted(done)}")
 
 if not any(r["policy"] == "Proportional" for r in rows):
-    prop = evaluate(env_common, policy_proportional, test, static_mean)
+    prop = evaluate(env_common, policy_proportional, val, static_mean)
     rows.append({"policy": "Proportional", "move_cost": np.nan, "seed": -1, "episodes": np.nan,
                  **{f"PB_{s}": prop["PB"][i] for i, s in enumerate(SLICES)},
                  "moves_per_day": prop["moves_per_day"], "qos_return": prop["return_per_day"]})
@@ -64,7 +68,7 @@ for mc in args.costs:
         print(f"\n=== move_cost {mc} | seed {seed} | {(time.time()-t0)/60:.1f} min elapsed ===", flush=True)
         agent, info = train_dqn(data, cfg, H.HP, train, val, static_mean, args.episodes, seed,
                                 RESULTS_DIR / f"sweep_mc{mc}_s{seed}.pt")
-        r = evaluate(env_common, lambda env, obs: agent.greedy(obs), test, static_mean)
+        r = evaluate(env_common, lambda env, obs: agent.greedy(obs), val, static_mean)
         rows.append({"policy": "DQN", "move_cost": mc, "seed": seed, "episodes": args.episodes,
                      **{f"PB_{s}": r["PB"][i] for i, s in enumerate(SLICES)},
                      "moves_per_day": r["moves_per_day"], "qos_return": r["return_per_day"]})
@@ -75,11 +79,14 @@ cols = [f"PB_{s}" for s in SLICES] + ["moves_per_day", "qos_return"]
 summary = df[df.policy == "DQN"].groupby("move_cost")[cols].agg(["mean", "std"]).round(4)
 summary.to_csv(RESULTS_DIR / "sweep_move_cost_summary.csv")
 
-print("\n\n=== TEST days, common metrics (QoS return uses move_cost = 0) ===")
+print("\n\n=== VALIDATION days, common metrics (QoS return uses move_cost = 0) ===")
 print(f"{'':<14}{'PB URLLC':>10}{'PB eMBB':>10}{'PB mMTC':>10}{'Moves/day':>11}{'QoS ret/day':>13}")
 p = df[df.policy == "Proportional"].iloc[0]
 print(f"{'Proportional':<14}{p.PB_URLLC:>10.4f}{p.PB_eMBB:>10.4f}{p.PB_mMTC:>10.4f}{p.moves_per_day:>11.1f}{p.qos_return:>13.1f}")
 for mc, g in df[df.policy == "DQN"].groupby("move_cost"):
     print(f"{'DQN mc=' + str(mc):<14}{g.PB_URLLC.mean():>10.4f}{g.PB_eMBB.mean():>10.4f}{g.PB_mMTC.mean():>10.4f}"
           f"{g.moves_per_day.mean():>11.1f}{g.qos_return.mean():>13.1f}   (n={len(g)} seeds, moves std {g.moves_per_day.std():.1f})")
+qos = df[df.policy == "DQN"].groupby("move_cost")["qos_return"].mean()
+chosen = qos[qos >= qos.max() - 0.01 * abs(qos.max())].index.max()
+print(f"\nselected move_cost (largest within 1% of the best QoS return): {chosen}")
 print(f"\ntotal time {(time.time()-t0)/60:.1f} min | saved results/sweep_move_cost_summary.csv")

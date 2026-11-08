@@ -2,6 +2,8 @@
 Slicing environment: CSV lambda(t) -> M/M/c/K queues -> state / reward (for the DQN agent).
 1 episode = 1 day = 1440 / decision_minutes decisions (96 at the default 15 minutes).
 Actions: 0 = keep, 1..6 = move `move_size` PRBs from slice i to slice j.
+Decisions are causal: when deciding for an interval, policies only see traffic and KPIs from the
+most recently completed interval (plus the current allocation and the clock/calendar).
 """
 import numpy as np
 import pandas as pd
@@ -59,16 +61,26 @@ class SlicingEnv:
                            else proportional_alloc([1, 1, 1], cfg["total_prbs"], cfg["min_alloc"]))
         self.alloc = self.init_alloc.copy()
 
-    def _metrics(self, alloc, t):
+    def last_interval(self, t):
+        """(day, step) of the last COMPLETED interval when deciding for step t of the current day."""
+        if t > 0:
+            return self.day, t - 1
+        if self.day > 0:
+            return self.day - 1, self.steps - 1
+        return 0, 0                                 # very first interval of the dataset: nothing earlier exists
+
+    def _metrics(self, alloc, t, day=None):
         """
-        Per-slice KPIs for decision step t. The queue is evaluated MINUTE BY MINUTE inside the
-        interval (steady state per minute) and then aggregated, so spikes are not averaged away.
+        Per-slice KPIs for step t of `day` (default: current day). The queue is evaluated MINUTE BY
+        MINUTE inside the interval (steady state per minute) and then aggregated, so spikes are not
+        averaged away.
         """
         c = self.cfg
+        day = self.day if day is None else day
         out = []
         for s in range(3):
             cs = int(alloc[s])
-            lam_m = self.fine[self.day, t, :, s]
+            lam_m = self.fine[day, t, :, s]
             b = mmck_metrics_batch(lam_m, c["mu"], cs, cs + c["buffer_per_slice"])
             PB = float((lam_m * b["PB"]).sum() / max(lam_m.sum(), 1e-12))        # packet-weighted
             Wq = float((b["lam_eff"] * b["Wq"]).sum() / max(b["lam_eff"].sum(), 1e-12))
@@ -77,11 +89,12 @@ class SlicingEnv:
         return out
 
     def _obs(self, t):
-        m = self._metrics(self.alloc, t)
+        day, k = self.last_interval(t)
+        m = self._metrics(self.alloc, k, day)
         tot = self.cfg["total_prbs"]
         f = []
         for s in range(3):
-            f += [self.lam[self.day, t, s] / tot, self.peak[self.day, t, s] / tot,
+            f += [self.lam[day, k, s] / tot, self.peak[day, k, s] / tot,
                   self.alloc[s] / tot, m[s]["util"], m[s]["PB"],
                   min(m[s]["Wq"], self.cfg["wq_cap"]) / self.cfg["wq_cap"]]
         ang = 2 * np.pi * t / self.steps
@@ -126,8 +139,8 @@ def policy_static(env, obs):
 
 
 def policy_proportional(env, obs):
-    lam_now = env.lam[env.day, env.t]
-    target = proportional_alloc(lam_now, env.cfg["total_prbs"], env.cfg["min_alloc"])
+    day, k = env.last_interval(env.t)
+    target = proportional_alloc(env.lam[day, k], env.cfg["total_prbs"], env.cfg["min_alloc"])
     diff = target - env.alloc
     i, j = int(np.argmin(diff)), int(np.argmax(diff))
     if i == j or diff[j] < env.cfg["move_size"] // 2 + 1:
