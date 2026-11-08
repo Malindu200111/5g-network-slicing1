@@ -18,7 +18,6 @@ A simulation framework in which a **Deep Q-Network (DQN)** agent dynamically re-
 | SimPy validation of the analytical model (load sweep, 3-slice priority queue) | Done (quick run and full run) |
 | SimPy packet-level replay of Static / Proportional / DQN allocations | Done (seed 0; other seeds pending) |
 | DQN agent (5 seeds, best-validation checkpoint, reconfiguration-cost sweep) | Done |
-| PPO agent and DQN-vs-PPO comparison | **Not implemented yet** (planned) |
 | Non-preemptive priority formula (Cobham) validated against SimPy | Done (`src/priority_model.py`, `verify_priority.py`) |
 | Priority-based queueing inside the RL environment | Not included (priority queue is validated in SimPy only) |
 | Hardware-in-the-loop (ESP32) | Not included (optional in the proposal) |
@@ -128,7 +127,6 @@ Over 21 operating points (3 slice sizes x offered load 0.4-1.3): maximum |P_B er
 - **Observation lag:** the agent and the Proportional heuristic only see the most recently completed interval and use no traffic forecast, so they react to a change one 15-minute interval late.
 - **Synthetic traffic and simulation only:** no operator data or hardware was used.
 - **Priority queueing** is validated in SimPy but is not part of the RL environment.
-- **PPO** is not implemented yet.
 
 ---
 
