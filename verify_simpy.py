@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from src import queuing_model as qm
+from src.priority_model import priority_ctmc
 from src.config import ASSUMED, RESULTS_DIR, SLICES
 
 
@@ -27,9 +28,9 @@ def main():
     n_seeds = 1 if args.quick else args.seeds
     RESULTS_DIR.mkdir(exist_ok=True)
 
-    mu, buf = ASSUMED["mu"], ASSUMED["buffer_per_slice"]
+    mu, buf = 2.0, 20   # per-server rate mu_eff of the equal split (see service_rate)
     # (label, c) - typical PRB counts of the three slices in the environment
-    configs = [("URLLC-like c=12", 12), ("eMBB-like c=37", 37), ("mMTC-like c=11", 11)]
+    configs = [("URLLC-like c=6", 6), ("eMBB-like c=18", 18), ("mMTC-like c=6", 6)]
     rhos = [0.4, 0.6, 0.8, 0.9, 1.0, 1.1, 1.3]        # offered load rho = lam / (c * mu)
 
     # ------------------------------------------------------------------ Part A
@@ -79,7 +80,7 @@ def main():
     plt.tight_layout(); plt.savefig(RESULTS_DIR / "simpy_validation.png", dpi=200)
 
     # ------------------------------------------------------------------ Part B
-    c_tot, mu = 60, mu
+    c_tot, mu = 30, mu                                  # 30 servers x 2 pkts/s = 60 pkts/s
     K_tot = c_tot + 3 * buf
     scenarios = {"normal load": {"URLLC": 6, "eMBB": 30, "mMTC": 6},
                  "peak load": {"URLLC": 16, "eMBB": 38, "mMTC": 6},
@@ -95,10 +96,13 @@ def main():
         agg_L = np.mean([x["aggregate"]["L"] for x in sims])
         print(f"\n[{sc}] total lambda={tot} | aggregate PB an/sim {an['PB']:.4f}/{agg_pb:.4f} | "
               f"L an/sim {an['L']:.2f}/{agg_L:.2f} | FIFO Wq (analytical) {an['Wq']:.3f}")
-        for s in SLICES:
+        pm = priority_ctmc([lams[s] for s in SLICES], mu, c_tot, K_tot)     # EXACT finite-buffer priority CTMC
+        for i, s in enumerate(SLICES):
             wq = np.mean([x[s]["Wq"] for x in sims]); pb = np.mean([x[s]["PB"] for x in sims])
-            print(f"   {s:<6} lambda={lams[s]:>3}  PB_sim {pb:.4f}  Wq_sim {wq:.3f}")
+            print(f"   {s:<6} lambda={lams[s]:>3}  PB sim {pb:.4f} / CTMC {pm['PB'][i]:.4f} | "
+                  f"Wq sim {wq:.3f} / CTMC {pm['Wq'][i]:.3f}")
             prow.append({"scenario": sc, "slice": s, "lam": lams[s], "PB_sim": pb, "Wq_sim": wq,
+                         "PB_formula": pm["PB"][i], "Wq_formula": pm["Wq"][i],
                          "agg_PB_an": an["PB"], "agg_PB_sim": agg_pb, "FIFO_Wq_an": an["Wq"]})
     pd.DataFrame(prow).to_csv(RESULTS_DIR / "simpy_priority.csv", index=False)
     print(f"\n>> saved: {RESULTS_DIR / 'simpy_validation.csv'}, simpy_validation.png, simpy_priority.csv")

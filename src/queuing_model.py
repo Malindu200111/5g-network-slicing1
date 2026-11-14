@@ -49,6 +49,33 @@ def mmck_metrics_batch(lams, mu, c, K):
     return {"PB": PB, "lam_eff": lam_eff, "Wq": Wq, "util": lam_eff / (c * mu)}
 
 
+def mmck_metrics_batch_c(lams, mu, c, K):
+    """Like mmck_metrics_batch but with an array of server counts c (one per minute, integers >= 1, c <= K)."""
+    lams = np.maximum(np.asarray(lams, dtype=float), 1e-9)
+    c = np.asarray(c, dtype=int)
+    a = lams / mu
+    n = np.arange(K + 1)
+    logfact = np.concatenate(([0.0], np.cumsum(np.log(np.arange(1, K + 1)))))
+    la, cc = np.log(a)[:, None], c[:, None]
+    logt = np.where(n <= cc, n * la - logfact[n], n * la - logfact[cc] - (n - cc) * np.log(cc))
+    p = np.exp(logt - logt.max(axis=1, keepdims=True))
+    p /= p.sum(axis=1, keepdims=True)
+    PB = p[:, K]
+    lam_eff = lams * (1.0 - PB)
+    Lq = (np.maximum(n - cc, 0) * p).sum(axis=1)
+    return {"PB": PB, "lam_eff": lam_eff, "Wq": Lq / np.maximum(lam_eff, 1e-12)}
+
+
+def mmck_metrics_frac_c(lams, mu, c_real, K):
+    """M/M/c/K for a non-integer server count: linear interpolation between floor(c) and ceil(c)."""
+    c_real = np.clip(np.asarray(c_real, dtype=float), 1.0, K - 1.0)
+    lo = np.floor(c_real).astype(int)
+    w = c_real - lo
+    a = mmck_metrics_batch_c(lams, mu, lo, K)
+    b = mmck_metrics_batch_c(lams, mu, np.minimum(lo + 1, K), K)
+    return {k: (1 - w) * a[k] + w * b[k] for k in a}
+
+
 # ---------------------------------------------------------------------
 # B) SimPy single slice
 # ---------------------------------------------------------------------

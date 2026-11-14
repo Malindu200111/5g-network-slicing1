@@ -16,8 +16,8 @@ import torch
 
 from src.agent import DQNAgent
 from src.config import ASSUMED, DATA_PATH, SLICES
-from src.environment import (SlicingEnv, evaluate, load_data, policy_proportional,
-                             policy_static, proportional_alloc)
+from src.environment import (SlicingEnv, evaluate, load_data, make_alloc, policy_proportional,
+                             policy_static)
 from train_hparams import FULL_EPISODES, HP, output_dir
 
 parser = argparse.ArgumentParser()
@@ -25,30 +25,31 @@ parser.add_argument("--episodes", type=int, default=FULL_EPISODES)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--minutes", type=int, default=ASSUMED["decision_minutes"])
 parser.add_argument("--no-sensitivity", action="store_true")
+parser.add_argument("--priority", action="store_true",
+                    help="train/evaluate with the priority-sharing queue model (outputs get the suffix _prio)")
 args = parser.parse_args()
 
 cfg = dict(ASSUMED)
 cfg["decision_minutes"] = args.minutes
+cfg["priority_sharing"] = bool(args.priority)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 OUT_DIR = output_dir(args.episodes)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-tag = f"{args.minutes}min_seed{args.seed}"
+tag = f"{args.minutes}min_seed{args.seed}" + ("_prio" if args.priority else "")
 
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"CSV not found: {DATA_PATH}\nCopy it into data/processed/ first.")
 
 
 def print_full_table(results):
-    """Per-slice PB and Wq, latency W = Wq + 1/mu, throughput, utilisation, moves, reward."""
-    mu, tot = cfg["mu"], cfg["total_prbs"]
+    """Per-slice PB and Wq, latency W = Wq + 1/mu_eff, throughput, utilisation, moves, reward."""
     print(f"{'Policy':<16}{'PB U':>8}{'PB e':>8}{'PB m':>8}{'Wq U':>8}{'Wq e':>8}{'Wq m':>8}"
           f"{'W U':>8}{'Thru':>8}{'Util':>8}{'Moves/d':>9}{'Reward/d':>10}")
     for name, r in results.items():
-        thr = r["util"] * tot * mu           # carried packets/s (average)
         print(f"{name:<16}{r['PB'][0]:>8.4f}{r['PB'][1]:>8.4f}{r['PB'][2]:>8.4f}"
               f"{r['Wq'][0]:>8.3f}{r['Wq'][1]:>8.3f}{r['Wq'][2]:>8.3f}"
-              f"{r['Wq'][0] + 1.0 / mu:>8.3f}{thr:>8.2f}{r['util']:>8.3f}"
+              f"{r['W'][0]:>8.3f}{r['throughput']:>8.2f}{r['util']:>8.3f}"
               f"{r['moves_per_day']:>9.1f}{r['return_per_day']:>10.2f}")
 
 
@@ -64,10 +65,10 @@ print("CSV :", DATA_PATH)
 print(f"decision interval: {cfg['decision_minutes']} min | lambda array (days, steps, slices): {lam.shape}")
 
 # Static allocations are designed from TRAIN days only
-static_mean = proportional_alloc(lam[train].mean(axis=(0, 1)), cfg["total_prbs"], cfg["min_alloc"])
-static_peak = proportional_alloc(lam[train].max(axis=(0, 1)), cfg["total_prbs"], cfg["min_alloc"])
-print(f"Static (mean) alloc {SLICES}: {static_mean}")
-print(f"Static (peak) alloc {SLICES}: {static_peak}")
+static_mean = make_alloc(lam[train].mean(axis=(0, 1)), cfg)      # rows: [PRBs, servers]
+static_peak = make_alloc(lam[train].max(axis=(0, 1)), cfg)
+print(f"Static (mean) alloc {SLICES}: PRBs {static_mean[0]} | servers {static_mean[1]}")
+print(f"Static (peak) alloc {SLICES}: PRBs {static_peak[0]} | servers {static_peak[1]}")
 
 env_train = SlicingEnv(data, train, cfg, init_alloc=static_mean, seed=args.seed)
 env_eval = SlicingEnv(data, train, cfg, init_alloc=static_mean)   # days are given per evaluate() call
@@ -137,7 +138,9 @@ for name, d in [("VALIDATION", val), ("TEST", test)]:
             rows.append({"policy": pname,
                          **{f"PB_{s}": r["PB"][i] for i, s in enumerate(SLICES)},
                          **{f"Wq_{s}": r["Wq"][i] for i, s in enumerate(SLICES)},
-                         "throughput": r["util"] * cfg["total_prbs"] * cfg["mu"],
+                         **{f"W_{s}": r["W"][i] for i, s in enumerate(SLICES)},
+                         **{f"Lq_{s}": r["Lq"][i] for i, s in enumerate(SLICES)},
+                         "throughput": r["throughput"],
                          "util": r["util"], "moves_per_day": r["moves_per_day"],
                          "return_per_day": r["return_per_day"]})
         csv_out = OUT_DIR / f"test_results_{tag}.csv"
@@ -154,7 +157,7 @@ if not args.no_sensitivity:
     for dm in (5, 15, 60):
         c2 = dict(cfg); c2["decision_minutes"] = dm
         d2 = load_data(DATA_PATH, dm)
-        sm = proportional_alloc(d2["mean"][train].mean(axis=(0, 1)), c2["total_prbs"], c2["min_alloc"])
+        sm = make_alloc(d2["mean"][train].mean(axis=(0, 1)), c2)
         e2 = SlicingEnv(d2, train, c2)
         st, pr = evaluate(e2, policy_static, test, sm), evaluate(e2, policy_proportional, test, sm)
         print(f"{dm:>7}m{d2['mean'].shape[1]:>10}{st['PB'][0]:>17.4f}{pr['PB'][0]:>15.4f}"
@@ -183,20 +186,23 @@ def run_day(policy, d):
     while not done:
         obs, r, done, _, info = env_eval.step(policy(env_eval, obs))
         allocs.append(info["alloc"])
-    return np.array(allocs)
+    return np.array(allocs)                         # shape (steps, 2, 3): [PRBs, servers] x slices
 
 
 d0 = test[0]
 hrs = np.arange(env_eval.steps) * cfg["decision_minutes"] / 60
-fig, ax = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+fig, ax = plt.subplots(5, 1, figsize=(11, 14), sharex=True)
 for s in range(3):
     ax[0].plot(hrs, lam[d0, :, s], label=SLICES[s])
-for k, (pname, pol) in enumerate([("Proportional", policy_proportional), ("DQN", dqn_policy)], start=1):
+k = 1
+for pname, pol in [("Proportional", policy_proportional), ("DQN", dqn_policy)]:
     al = run_day(pol, d0)
-    for s in range(3):
-        ax[k].plot(hrs, al[:, s], label=SLICES[s])
-    ax[k].set_ylabel("Allocated PRBs"); ax[k].set_title(f"Allocation: {pname}")
-ax[0].set_ylabel("lambda"); ax[0].set_title(f"Day {d0 + 1}: traffic from CSV"); ax[2].set_xlabel("Hour of day")
+    for r, res in enumerate(["PRBs (bandwidth)", "servers (capacity)"]):
+        for s in range(3):
+            ax[k].plot(hrs, al[:, r, s], label=SLICES[s])
+        ax[k].set_ylabel(f"Allocated {res.split()[0]}"); ax[k].set_title(f"{pname}: {res}")
+        k += 1
+ax[0].set_ylabel("lambda"); ax[0].set_title(f"Day {d0 + 1}: traffic from CSV"); ax[-1].set_xlabel("Hour of day")
 for a in ax:
     a.grid(True, linestyle="--", alpha=0.6); a.legend(loc="upper right")
 plt.tight_layout(); plt.savefig(OUT_DIR / f"allocation_dqn_vs_prop_{tag}.png", dpi=200)

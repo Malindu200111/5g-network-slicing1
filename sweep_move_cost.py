@@ -19,7 +19,7 @@ import pandas as pd
 
 from src.config import ASSUMED, DATA_PATH, RESULTS_DIR, SLICES
 from src.environment import (SlicingEnv, evaluate, load_data, policy_proportional,
-                             proportional_alloc)
+                             make_alloc)
 from src.trainer import train_dqn
 import train_hparams as H            # DQN hyperparameters (shared with train_dqn.py)
 
@@ -36,7 +36,7 @@ cfg0 = dict(ASSUMED); cfg0["decision_minutes"] = args.minutes
 days = lambda r: list(range(r[0] - 1, r[1]))
 train, val = days(cfg0["train_days"]), days(cfg0["val_days"])
 data = load_data(DATA_PATH, args.minutes)
-static_mean = proportional_alloc(data["mean"][train].mean(axis=(0, 1)), cfg0["total_prbs"], cfg0["min_alloc"])
+static_mean = make_alloc(data["mean"][train].mean(axis=(0, 1)), cfg0)
 
 # common evaluation environment: pure QoS reward (move_cost = 0)
 cfg_eval = dict(cfg0); cfg_eval["move_cost"] = 0.0

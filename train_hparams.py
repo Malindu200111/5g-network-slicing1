@@ -23,3 +23,38 @@ HP = {
 def output_dir(episodes):
     """Full runs write to results/; shorter runs get their own folder so they cannot replace them."""
     return RESULTS_DIR if episodes == FULL_EPISODES else RESULTS_DIR / f"quick_ep{episodes}"
+
+
+# PPO (same environment, same number of training episodes as the DQN)
+PPO_HP = {
+    "hidden": 128,
+    "lr": 3e-4,
+    "gamma": 0.95,              # same discount as the DQN
+    "gae_lambda": 0.95,
+    "clip": 0.2,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "reward_scale": 0.1,        # rewards are about -2 per step; scaled for stable value learning
+    "episodes_per_update": 8,   # 8 days (768 steps) per policy update
+    "epochs": 4,
+    "minibatch": 128,
+    "eval_every": 50,
+}
+
+
+# PPO hyperparameters (same network size, discount, episodes and validation protocol as the DQN)
+PPO_HP = {
+    "hidden": 128,
+    "lr": 3e-4,
+    "gamma": 0.95,
+    "gae_lambda": 0.95,
+    "clip": 0.2,
+    "epochs": 6,
+    "minibatch": 128,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad": 0.5,
+    "reward_scale": 0.1,        # rewards are about -2 per step; scaled for stable value learning
+    "episodes_per_update": 5,   # one update per 5 days of experience (480 steps)
+    "eval_every": 50,
+}

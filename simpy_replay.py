@@ -29,7 +29,7 @@ import pandas as pd
 
 from src.config import ASSUMED, DATA_PATH, RESULTS_DIR, SLICES
 from src.environment import (SlicingEnv, load_data, policy_proportional, policy_static,
-                             proportional_alloc)
+                             make_alloc, service_rate, buffers)
 from train_hparams import HP
 
 
@@ -54,11 +54,21 @@ def export_allocations(args, cfg, data, static_mean, out_csv):
         policies["Proportional"] = policy_proportional
     if "DQN" in names:
         from src.agent import DQNAgent
-        model = args.model or str(RESULTS_DIR / f"dqn_best_{args.minutes}min_seed{args.seed}.pt")
+        model = args.model or str(RESULTS_DIR / f"dqn_best_{args.minutes}min_seed{args.seed}{args.suffix}.pt")
         agent = DQNAgent(env.obs_dim, env.n_actions, HP, device="cpu", seed=args.seed)
         agent.load(model)
         print(f"loaded DQN model: {model}")
         policies["DQN"] = lambda e, o: agent.greedy(o)
+    if "PPO" in names:
+        import torch
+        from src.ppo_agent import PPOAgent
+        from train_hparams import PPO_HP
+        torch.set_num_threads(1)
+        pmodel = str(RESULTS_DIR / f"ppo_best_{args.minutes}min_seed{args.seed}.pt")
+        pagent = PPOAgent(env.obs_dim, env.n_actions, PPO_HP, device="cpu", seed=args.seed)
+        pagent.load(pmodel)
+        print(f"loaded PPO model: {pmodel}")
+        policies["PPO"] = lambda e, o: pagent.greedy(o)
 
     n_days = data["mean"].shape[0]
     split = lambda d: ("train" if cfg["train_days"][0] - 1 <= d < cfg["train_days"][1] else
@@ -74,7 +84,9 @@ def export_allocations(args, cfg, data, static_mean, out_csv):
                        "hour": t * cfg["decision_minutes"] / 60, "reward": r}
                 for s, name in enumerate(SLICES):
                     m = info["metrics"][s]
-                    row.update({f"alloc_{name}": int(info["alloc"][s]), f"lam_{name}": float(info["lam"][s]),
+                    row.update({f"alloc_{name}": int(info["alloc"][0, s]),        # PRBs (bandwidth)
+                                f"srv_{name}": int(info["alloc"][1, s]),          # servers (capacity)
+                                f"lam_{name}": float(info["lam"][s]),
                                 f"lam_eff_{name}": m["lam_eff"], f"PB_an_{name}": m["PB"],
                                 f"Wq_an_{name}": m["Wq"]})
                 rows.append(row)
@@ -91,8 +103,9 @@ def export_allocations(args, cfg, data, static_mean, out_csv):
 # STAGE 2: packet-level SimPy replay with time-varying capacity
 # =====================================================================
 class SliceSim:
-    """M/M/c(t)/K(t) queue: c follows the allocation, K = c + buffer. A shrinking c lets in-service
-    packets finish (no eviction); new arrivals are blocked while the system holds >= K packets."""
+    """M/M/c(t)/K(t) queue: c (servers) and mu (per-server rate, set by servers AND PRBs) follow the
+    allocation, K = c + buffer. A shrinking c lets in-service packets finish (no eviction); new
+    arrivals are blocked while the system holds >= K packets."""
 
     def __init__(self, env, rng, mu, buf, c0, step_sec, steps):
         self.env, self.rng, self.mu, self.buf = env, rng, mu, buf
@@ -128,8 +141,8 @@ class SliceSim:
         if self.q and self.busy < self.c:
             self._start(self.q.popleft())
 
-    def set_c(self, c):
-        self.c = int(c)
+    def set_params(self, c, mu):
+        self.c, self.mu = int(c), mu
         while self.q and self.busy < self.c:
             self._start(self.q.popleft())
 
@@ -149,26 +162,26 @@ def _source(env, sl, lam_min, nprng, scale):
             yield env.timeout(60.0)
 
 
-def _controller(env, slices, alloc, step_sec):
-    for t in range(1, alloc.shape[0]):
+def _controller(env, slices, srv, mu, step_sec):
+    for t in range(1, srv.shape[0]):
         yield env.timeout(step_sec)
         for s in range(3):
-            slices[s].set_c(alloc[t, s])
+            slices[s].set_params(srv[t, s], mu[t, s])
 
 
 def replay_job(job):
     import simpy
-    policy, pidx, day, alloc, lam_min, mu, buf, scale, seed, step_sec = job
-    steps = alloc.shape[0]
+    policy, pidx, day, srv, mu, lam_min, buf, scale, seed, step_sec = job   # srv, mu: (steps, 3)
+    steps = srv.shape[0]
     t0 = time.time()
     env = simpy.Environment()
     py_rng = random.Random(seed * 1_000_003 + pidx * 10_007 + day)
     nprng = np.random.default_rng([seed, day])                  # same arrivals for every policy
-    mu_s = mu * scale
-    slices = [SliceSim(env, py_rng, mu_s, buf, alloc[0, s], step_sec, steps) for s in range(3)]
+    mu = mu * scale                                             # traffic and service rate scaled together
+    slices = [SliceSim(env, py_rng, mu[0, s], buf[s], srv[0, s], step_sec, steps) for s in range(3)]
     for s in range(3):
         env.process(_source(env, slices[s], lam_min[:, s], nprng, scale))
-    env.process(_controller(env, slices, alloc, step_sec))
+    env.process(_controller(env, slices, srv, mu, step_sec))
     env.run(until=steps * step_sec)
     return {"policy": policy, "day": day, "secs": time.time() - t0,
             "arr": np.array([s.arr for s in slices]), "drop": np.array([s.drop for s in slices]),
@@ -181,23 +194,25 @@ def main():
     ap.add_argument("--stage", default="both", choices=["export", "replay", "both"])
     ap.add_argument("--days", default="151-180", help="1-based range 'a-b' or 'all'")
     ap.add_argument("--every", type=int, default=1, help="use every k-th day of the range")
-    ap.add_argument("--policies", default="Static,Proportional,DQN")
+    ap.add_argument("--policies", default="Static,Proportional,DQN", help="add PPO after train_ppo.py")
     ap.add_argument("--model", default=None, help="path of the DQN .pt (default results/dqn_best_<tag>.pt)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--suffix", default="", help="e.g. _prio for models trained with main.py --priority")
     ap.add_argument("--minutes", type=int, default=ASSUMED["decision_minutes"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 2) - 1))
     args = ap.parse_args()
 
     cfg = dict(ASSUMED); cfg["decision_minutes"] = args.minutes
+    cfg["priority_sharing"] = args.suffix == "_prio"        # agents trained with --priority must see the same KPIs
     RESULTS_DIR.mkdir(exist_ok=True)
-    tag = f"{args.minutes}min_seed{args.seed}"
+    tag = f"{args.minutes}min_seed{args.seed}{args.suffix}"
     alloc_csv = RESULTS_DIR / f"allocations_{tag}.csv"
 
     data = load_data(DATA_PATH, cfg["decision_minutes"])
     lam = data["mean"]
     train = list(range(cfg["train_days"][0] - 1, cfg["train_days"][1]))
-    static_mean = proportional_alloc(lam[train].mean(axis=(0, 1)), cfg["total_prbs"], cfg["min_alloc"])
+    static_mean = make_alloc(lam[train].mean(axis=(0, 1)), cfg)
 
     # ---------------- stage 1
     if args.stage in ("export", "both"):
@@ -216,9 +231,12 @@ def main():
     for pidx, p in enumerate(pols):
         sub = adf[adf.policy == p]
         for d in days:
-            a = sub[sub.day == d + 1].sort_values("step")[[f"alloc_{s}" for s in SLICES]].to_numpy()
-            jobs.append((p, pidx, d + 1, a, data["fine"][d].reshape(1440, 3), cfg["mu"],
-                         cfg["buffer_per_slice"], args.scale, args.seed, step_sec))
+            sd = sub[sub.day == d + 1].sort_values("step")
+            prb = sd[[f"alloc_{s}" for s in SLICES]].to_numpy()
+            srv = sd[[f"srv_{s}" for s in SLICES]].to_numpy()
+            mu = service_rate(prb, srv, cfg)                       # per-server rate from PRBs and servers
+            jobs.append((p, pidx, d + 1, srv, mu, data["fine"][d].reshape(1440, 3),
+                         buffers(cfg), args.scale, args.seed, step_sec))
     print(f"\nSimPy replay: {len(pols)} policies x {len(days)} days = {len(jobs)} runs | scale {args.scale} | "
           f"workers {args.workers}")
 
@@ -248,7 +266,7 @@ def main():
                 a, dr, sv = r["arr"][s][k], r["drop"][s][k], r["served"][s][k]
                 step_rows.append({
                     "policy": r["policy"], "day": r["day"], "step": k, "hour": sub.loc[k, "hour"], "slice": name,
-                    "alloc_prbs": int(sub.loc[k, f"alloc_{name}"]), "lambda_csv": sub.loc[k, f"lam_{name}"],
+                    "alloc_prbs": int(sub.loc[k, f"alloc_{name}"]), "alloc_servers": int(sub.loc[k, f"srv_{name}"]), "lambda_csv": sub.loc[k, f"lam_{name}"],
                     "sim_arrivals": a, "sim_drops": dr, "sim_service_starts": sv,
                     "PB_sim": dr / a if a else 0.0, "PB_analytical": sub.loc[k, f"PB_an_{name}"],
                     "Wq_sim_s": r["wait"][s][k] / sv * args.scale if sv else 0.0,

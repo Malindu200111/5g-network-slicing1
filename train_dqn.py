@@ -15,8 +15,8 @@ import torch
 
 from src.agent import DQNAgent
 from src.config import ASSUMED, DATA_PATH, SLICES
-from src.environment import (SlicingEnv, evaluate, load_data, policy_proportional,
-                             policy_static, print_table, proportional_alloc)
+from src.environment import (SlicingEnv, evaluate, load_data, make_alloc, policy_proportional,
+                             policy_static, print_table)
 from train_hparams import FULL_EPISODES, HP, output_dir
 
 parser = argparse.ArgumentParser()
@@ -38,10 +38,10 @@ days = lambda r: list(range(r[0] - 1, r[1]))
 train, val, test = days(cfg["train_days"]), days(cfg["val_days"]), days(cfg["test_days"])
 data = load_data(DATA_PATH, cfg["decision_minutes"])
 lam = data["mean"]
-static_mean = proportional_alloc(lam[train].mean(axis=(0, 1)), cfg["total_prbs"], cfg["min_alloc"])
-static_peak = proportional_alloc(lam[train].max(axis=(0, 1)), cfg["total_prbs"], cfg["min_alloc"])
-print(f"interval {args.minutes} min | steps/day {lam.shape[1]} | PRBs {cfg['total_prbs']} | "
-      f"static(mean) {static_mean} | episodes {args.episodes}")
+static_mean = make_alloc(lam[train].mean(axis=(0, 1)), cfg)      # rows: [PRBs, servers]
+static_peak = make_alloc(lam[train].max(axis=(0, 1)), cfg)
+print(f"interval {args.minutes} min | steps/day {lam.shape[1]} | PRBs {cfg['total_prbs']} | servers {cfg['total_servers']} | "
+      f"static(mean) PRBs {static_mean[0]} servers {static_mean[1]} | episodes {args.episodes}")
 
 env_train = SlicingEnv(data, train, cfg, init_alloc=static_mean, seed=args.seed)
 env_eval = SlicingEnv(data, train, cfg, init_alloc=static_mean)
@@ -98,7 +98,9 @@ rows = []
 for name, r in results.items():
     rows.append({"policy": name, **{f"PB_{s}": r["PB"][i] for i, s in enumerate(SLICES)},
                  **{f"Wq_{s}": r["Wq"][i] for i, s in enumerate(SLICES)},
-                 "throughput": r["util"] * cfg["total_prbs"] * cfg["mu"],
+                 **{f"W_{s}": r["W"][i] for i, s in enumerate(SLICES)},
+                 **{f"Lq_{s}": r["Lq"][i] for i, s in enumerate(SLICES)},
+                 "throughput": r["throughput"],
                  "util": r["util"], "moves_per_day": r["moves_per_day"], "return_per_day": r["return_per_day"]})
 pd.DataFrame(rows).to_csv(OUT_DIR / f"test_results_{tag}.csv", index=False)
 
@@ -124,15 +126,18 @@ def run_day(policy, d):
 
 d0 = test[0]
 hrs = np.arange(env_eval.steps) * cfg["decision_minutes"] / 60
-fig, ax = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+fig, ax = plt.subplots(5, 1, figsize=(11, 14), sharex=True)
 for s in range(3):
     ax[0].plot(hrs, lam[d0, :, s], label=SLICES[s])
-for k, (name, pol) in enumerate([("Proportional", policy_proportional), (f"DQN", dqn_policy)], start=1):
-    al = run_day(pol, d0)
-    for s in range(3):
-        ax[k].plot(hrs, al[:, s], label=SLICES[s])
-    ax[k].set_ylabel("Allocated PRBs"); ax[k].set_title(f"Allocation: {name}")
-ax[0].set_ylabel("lambda"); ax[0].set_title(f"Day {d0+1}: traffic from CSV"); ax[2].set_xlabel("Hour of day")
+k = 1
+for name, pol in [("Proportional", policy_proportional), ("DQN", dqn_policy)]:
+    al = run_day(pol, d0)                               # (steps, 2, 3)
+    for r, res in enumerate(["PRBs (bandwidth)", "servers (capacity)"]):
+        for s in range(3):
+            ax[k].plot(hrs, al[:, r, s], label=SLICES[s])
+        ax[k].set_ylabel(f"Allocated {res.split()[0]}"); ax[k].set_title(f"{name}: {res}")
+        k += 1
+ax[0].set_ylabel("lambda"); ax[0].set_title(f"Day {d0+1}: traffic from CSV"); ax[-1].set_xlabel("Hour of day")
 for a in ax:
     a.grid(True, linestyle="--", alpha=0.6); a.legend(loc="upper right")
 plt.tight_layout(); plt.savefig(OUT_DIR / f"allocation_dqn_vs_prop_{tag}.png", dpi=200)
