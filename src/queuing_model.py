@@ -7,9 +7,9 @@ Queueing models for the slices.
 import numpy as np
 
 
-# ---------------------------------------------------------------------
-# A) Analytical M/M/c/K (log-space, stable for c, K ~ 100)
-# ---------------------------------------------------------------------
+
+# Analytical M/M/c/K (log-space, stable for c, K ~ 100)
+
 def mmck_metrics(lam, mu, c, K):
     if lam <= 1e-12:
         return {"PB": 0.0, "lam_eff": 0.0, "L": 0.0, "Lq": 0.0, "Wq": 0.0, "W": 1.0 / mu, "util": 0.0}
@@ -76,9 +76,9 @@ def mmck_metrics_frac_c(lams, mu, c_real, K):
     return {k: (1 - w) * a[k] + w * b[k] for k in a}
 
 
-# ---------------------------------------------------------------------
-# B) SimPy single slice
-# ---------------------------------------------------------------------
+
+# SimPy single slice
+
 def simulate_mmck(lam, mu, c, K, sim_time=20000, warmup=1000, seed=1):
     import simpy
     rng = np.random.default_rng(seed)
@@ -122,9 +122,9 @@ def simulate_mmck(lam, mu, c, K, sim_time=20000, warmup=1000, seed=1):
             "W": float(np.mean(st["w"])), "L": st["area"] / (sim_time - warmup)}
 
 
-# ---------------------------------------------------------------------
-# C) SimPy priority multi-slice (non-preemptive, shared servers and K)
-# ---------------------------------------------------------------------
+
+# SimPy priority multi-slice (non-preemptive, shared servers and K)
+
 def simulate_priority(lams, mu, c, K, slices=("URLLC", "eMBB", "mMTC"),
                       sim_time=20000, warmup=1000, seed=1):
     import simpy
